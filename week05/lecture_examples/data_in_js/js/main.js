@@ -28,7 +28,11 @@ function gbfsStationToFeature(gbfsStation) {
 window.gbfsStationToFeature = gbfsStationToFeature;
 window.stationsData = stationsData;
 
-const stations = stationsData.data.stations.map(gbfsStationToFeature);
+// const stations = stationsData.data.stations.map(gbfsStationToFeature);
+const station = [];
+for (const gbfsStation of stationsData.data.stations){
+  stations.push(gbfsStationToFeature(gbfsStation));
+}
 
 const stationsLayer = L.geoJSON(stations);
 stationsLayer.addTo(map);
@@ -40,7 +44,15 @@ for (const hood of hoodsCollection.features) {
   }
 
   const hoodStations = stations.filter(stationInHood);
-
+  return{
+    id:hood.id,
+    geometry:hood.geometry,
+    properties:{
+      ...hood.properties,
+      stations:hoodStations,
+      stationCount:hoodStations.length,
+    },
+  };
   const areaSqKm = hood.properties['Shape_Area'] / 3280.84 / 3280.84;
   const stationCount = hoodStations.length;
   const stationDensity = stationCount / areaSqKm;
@@ -54,3 +66,7 @@ hoodsLayer.bindTooltip(layer => {
   const density = hood.properties.stationDensity.toFixed(2);
   return `${name}<br>${density} stations / sq km`;
 });
+
+// hoodsLayer.bindTooltip(layer => {
+//   const hood = 
+// })
