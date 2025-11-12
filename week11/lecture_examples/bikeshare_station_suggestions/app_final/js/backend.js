@@ -1,0 +1,227 @@
+// Set up Firestore connection
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs } from 'https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js';
+
+// Your web app's Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyBxGc-5vViXRVYX6AhUcoiPfdpilRKGROo",
+  authDomain: "bikeshare-station-suggestions.firebaseapp.com",
+  projectId: "bikeshare-station-suggestions",
+  storageBucket: "bikeshare-station-suggestions.firebasestorage.app",
+  messagingSenderId: "43424665335",
+  appId: "1:43424665335:web:aa8b7904e61a3f36d54df2"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+
+// Initalize Firestore connection. The following security policy is implemented
+// on the collection:
+//
+//   rules_version = '2';
+//   
+//   service cloud.firestore {
+//     match /databases/{database}/documents {
+//     
+//       match /suggestions/{document=**} {
+//       	// Anyone should be able to access the data in the collection.
+//         allow read: if true;
+//         
+//         // Ideally we could rate-limit the creates, but we want to make
+//         // adding a suggestions as low-friction as possible.
+//         allow create: if true;
+//         
+//         // There is currently no need for anyone to update or delete
+//         // documents in the collection. This may change with admin
+//         // features.
+//         allow update: if false;
+//         allow delete: if false;
+//       }
+//     
+//     }
+//   }
+const db = getFirestore(app);
+  
+/**
+ * Backend service for managing bikeshare station suggestions
+ * Uses Firestore for data persistence
+ */
+const Backend = {
+  suggestions: [],
+
+  /**
+   * Save a new bikeshare station suggestion
+   * @param {Object} suggestionData - The suggestion data to save
+   * @param {Object} suggestionData.location - GeoJSON Point feature
+   * @param {string} suggestionData.city - City name
+   * @param {boolean} suggestionData.inServiceArea - Whether location is in service area
+   * @param {string|null} suggestionData.reasonNearExisting - Reason for suggestion near existing station
+   * @param {string|null} suggestionData.reasonNew - Reason for new station location
+   * @param {string|null} suggestionData.comments - Additional comments
+   * @param {string} suggestionData.timestamp - ISO timestamp
+   * @param {Object|null} suggestionData.closestStation - Closest station info
+   * @returns {Promise<Object>} The saved suggestion with generated ID
+   * @throws {Error} Network error
+   */
+  async saveSuggestion(suggestionData) {
+    // Create suggestion record
+    const suggestion = {
+      id: `suggestion_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      ...suggestionData,
+      status: 'submitted',
+      submittedAt: new Date().toISOString()
+    };
+
+    // Save to Firestore
+    try {
+      const coll = collection(db, "suggestions");
+      const docRef = await addDoc(coll, suggestion);
+      console.log("Document written with ID: ", docRef.id);
+    } catch (e) {
+      console.error("Error adding document: ", e);
+      throw new Error('Network error - please try again');
+    }
+
+    // Also keep in-memory copy for this session
+    Backend.suggestions.push(suggestion);
+
+    console.log('Suggestion saved:', suggestion);
+    return suggestion;
+  },
+
+  _loadSuggestionsPromise: null,
+
+  /**
+   * Internal helper to load all suggestions
+   * @returns {Promise<Array>} Array of all suggestion objects
+   */
+  async _loadSuggestionsHelper() {
+    const coll = collection(db, "suggestions");
+    const querySnapshot = await getDocs(coll);
+    const suggestions = querySnapshot.docs.map(doc => doc.data());
+
+    console.log('Suggestions loaded:', suggestions);
+    return suggestions;
+  },
+
+  async loadSuggestions(events) {
+    if (Backend.suggestions.length > 0) { return }
+
+    events.dispatchEvent(new CustomEvent('load-suggestions'));
+    Backend._loadSuggestionsPromise ||= Backend._loadSuggestionsHelper();
+    try {
+      const suggestions = await Backend._loadSuggestionsPromise;
+      Backend.suggestions = suggestions;
+      events.dispatchEvent(new CustomEvent('load-suggestions:success', { detail: { suggestions } }));
+    } catch (error) {
+      console.error('Error loading suggestions:', error);
+      events.dispatchEvent(new CustomEvent('load-suggestions:error', { detail: { error } }));
+    }
+  },
+
+  /**
+   * Get all stored suggestions
+   * @returns {Promise<Array>} Array of all suggestion objects
+   */
+  async getSuggestions() {
+    await Backend.loadSuggestions();
+    return Backend.suggestions;
+  },
+
+  /**
+   * Get suggestions within a geographic bounding box
+   * @param {Object} bounds - Bounding box coordinates
+   * @param {number} bounds.west - Western longitude
+   * @param {number} bounds.east - Eastern longitude
+   * @param {number} bounds.south - Southern latitude
+   * @param {number} bounds.north - Northern latitude
+   * @returns {Promise<Array>} Array of suggestions within bounds
+   */
+  async getSuggestionsByArea(bounds) {
+    // Filter suggestions within bounds (simple bbox check)
+    const suggestions = await Backend.getSuggestions();
+    return suggestions.filter(suggestion => {
+      const [lng, lat] = suggestion.location.geometry.coordinates;
+      return lng >= bounds.west && lng <= bounds.east && 
+             lat >= bounds.south && lat <= bounds.north;
+    });
+  },
+
+  /**
+   * Update the status of a suggestion (admin function)
+   * @param {string} id - Suggestion ID
+   * @param {string} status - New status value
+   * @returns {Promise<Object>} Updated suggestion object
+   * @throws {Error} If suggestion not found
+   */
+  async updateSuggestionStatus(id, status) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    const suggestion = Backend.suggestions.find(s => s.id === id);
+    if (suggestion) {
+      suggestion.status = status;
+      suggestion.updatedAt = new Date().toISOString();
+      localStorage.setItem('bikeshare-suggestions', JSON.stringify(Backend.suggestions));
+      return suggestion;
+    }
+    throw new Error('Suggestion not found');
+  },
+
+  /**
+   * Delete a suggestion (admin function)
+   * @param {string} id - Suggestion ID to delete
+   * @returns {Promise<Object>} Deleted suggestion object
+   * @throws {Error} If suggestion not found
+   */
+  async deleteSuggestion(id) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    
+    const index = Backend.suggestions.findIndex(s => s.id === id);
+    if (index !== -1) {
+      const deleted = Backend.suggestions.splice(index, 1)[0];
+      localStorage.setItem('bikeshare-suggestions', JSON.stringify(Backend.suggestions));
+      return deleted;
+    }
+    throw new Error('Suggestion not found');
+  },
+
+  /**
+   * Clear all suggestion data (utility function for demo)
+   */
+  clearAllSuggestions() {
+    Backend.suggestions = [];
+    localStorage.removeItem('bikeshare-suggestions');
+    console.log('All suggestions cleared');
+  },
+
+  /**
+   * Get summary statistics about stored suggestions
+   * @returns {Object} Statistics object with total, byCity, byStatus, and recentCount
+   */
+  getStats() {
+    const total = Backend.suggestions.length;
+    const byCity = {};
+    const byStatus = {};
+    
+    Backend.suggestions.forEach(suggestion => {
+      const city = suggestion.city || 'Unknown';
+      const status = suggestion.status || 'unknown';
+      
+      byCity[city] = (byCity[city] || 0) + 1;
+      byStatus[status] = (byStatus[status] || 0) + 1;
+    });
+
+    return {
+      total,
+      byCity,
+      byStatus,
+      recentCount: Backend.suggestions.filter(s => {
+        const dayAgo = new Date();
+        dayAgo.setDate(dayAgo.getDate() - 1);
+        return new Date(s.submittedAt) > dayAgo;
+      }).length
+    };
+  }
+};
+
+export { Backend };
